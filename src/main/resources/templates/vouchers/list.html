@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ko"
+      xmlns:th="http://www.thymeleaf.org"
+      xmlns:layout="http://www.ultraq.net.nz/thymeleaf/layout"
+      layout:decorate="~{layout/base}">
+<head>
+  <meta charset="UTF-8"/>
+  <title layout:fragment="title">전표 목록</title>
+
+  <!-- AG Grid CSS (Quartz) : JS와 같은 버전으로 고정! -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.1/styles/ag-grid.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.1/styles/ag-theme-quartz.css">
+
+  <style>
+    .page-title { font-size:22px; font-weight:700; margin-bottom:12px; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px; }
+    .toolbar input, .toolbar select, .toolbar button {
+      padding:8px 10px; border:1px solid #e5e7eb; border-radius:8px; background:#fff;
+    }
+    .card { background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:16px; }
+    /* 테마 클래스 + 고정 높이 */
+    #grid.ag-theme-quartz { height: 600px; width: 100%; }
+
+    /* 합계(고정 하단) 행 스타일 약간 강조 */
+    .ag-theme-quartz .ag-row-pinned {
+      font-weight: 700;
+      background: #fafafa;
+    }
+  </style>
+</head>
+
+<body>
+<section layout:fragment="content">
+  <div class="page-title">전표 목록</div>
+
+  <!-- 필터 -->
+  <div class="toolbar">
+    <select id="typeFilter">
+      <option value="">전체</option>
+      <option value="S">매출</option>
+      <option value="P">매입</option>
+    </select>
+    <select id="statusFilter">
+      <option value="">상태(전체)</option>
+      <option value="OPEN">OPEN</option>
+      <option value="CLOSED">CLOSED</option>
+    </select>
+    <input id="keyword" type="text" placeholder="전표번호/거래처 검색..." />
+    <button id="btnSearch">조회</button>
+    <button id="btnRefresh">초기화</button>
+  </div>
+
+  <!-- 간단 CRUD 폼 -->
+  <div class="toolbar">
+    <input id="voucherNo" placeholder="전표번호" />
+    <select id="type">
+      <option value="S">매출</option>
+      <option value="P">매입</option>
+    </select>
+    <input id="voucherDate" type="date" />
+    <input id="partnerName" placeh	older="거래처" />
+    <input id="amount" type="number" step="1" placeholder="금액" />
+    <select id="status">
+      <option value="OPEN">OPEN</option>
+      <option value="CLOSED">CLOSED</option>
+    </select>
+    <button id="btnCreate">등록</button>
+    <button id="btnUpdate">수정</button>
+    <button id="btnDelete">삭제</button>
+    <span class="muted">* 행 클릭 후 수정/삭제</span>
+  </div>
+
+  <div class="card">
+    <!-- Quartz 테마 클래스 필수 -->
+    <div id="grid" class="ag-theme-quartz"></div>
+  </div>
+
+  <!-- libs: JS도 CSS와 같은 버전! -->
+  <script defer src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.1/dist/ag-grid-community.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/axios@1.7.7/dist/axios.min.js"></script>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const today = new Date().toISOString().slice(0,10);
+      document.getElementById('voucherDate').value = today;
+
+      const gridDiv = document.getElementById('grid');
+      let gridApi;
+
+      const columnDefs = [
+        { field:'id', headerName:'ID', maxWidth:90 },
+        { field:'voucherNo', headerName:'전표번호', minWidth:140 },
+        { field:'type', headerName:'구분', maxWidth:100, valueFormatter:p=>p.value==='S'?'매출':'매입' },
+        { field:'voucherDate', headerName:'일자', minWidth:120 },
+        { field:'partnerName', headerName:'거래처', flex:1 },
+        { field:'amount', headerName:'금액', type:'rightAligned', valueFormatter:p=>Number(p.value||0).toLocaleString() },
+        { field:'status', headerName:'상태', maxWidth:120 }
+      ];
+
+      const gridOptions = {
+        columnDefs,
+        rowData: [],
+        rowSelection:'single',
+        pagination:true,
+        paginationPageSize:10,
+        animateRows:true,
+        defaultColDef:{ sortable:true, resizable:true, filter:true },
+
+        /* 이벤트: 필터/정렬/모델 변경 시 합계 재계산 */
+        onGridReady: (params) => { gridApi = params.api; search(); },
+        onFilterChanged: updatePinnedTotals,
+        onSortChanged: updatePinnedTotals,
+        onModelUpdated: updatePinnedTotals,
+
+        onRowClicked: e => fillForm(e.data)
+      };
+
+      // v31+는 createGrid가 API 반환
+      if (window.agGrid?.createGrid) {
+        gridApi = agGrid.createGrid(gridDiv, gridOptions);
+      } else {
+        new agGrid.Grid(gridDiv, gridOptions);
+        gridApi = gridOptions.api; // v30-
+      }
+
+      /* ---- 호환 헬퍼들 ---- */
+      function setRows(rows) {
+        if (gridApi?.setGridOption) gridApi.setGridOption('rowData', rows);      // v31+
+        else if (gridApi?.setRowData) gridApi.setRowData(rows);                  // v30-
+      }
+      function setPinnedBottom(rows) {
+        if (gridApi?.setGridOption) gridApi.setGridOption('pinnedBottomRowData', rows); // v31+
+        else if (gridApi?.setPinnedBottomRowData) gridApi.setPinnedBottomRowData(rows); // v30-
+      }
+
+      /* ---- 합계 행 계산 (현재 필터/정렬 결과 기준) ---- */
+      function updatePinnedTotals() {
+        if (!gridApi) return;
+        let sum = 0;
+        let count = 0;
+        // 필터·정렬 이후 표시되는 노드들만 순회
+        gridApi.forEachNodeAfterFilterAndSort(node => {
+          count++;
+          const val = Number(node.data?.amount || 0);
+          if (!Number.isNaN(val)) sum += val;
+        });
+        setPinnedBottom([{
+          voucherNo: '합계',
+          partnerName: `건수 ${count}건`,
+          amount: sum
+        }]);
+      }
+
+      /* ---- API ---- */
+      async function search() {
+        const type    = document.getElementById('typeFilter').value;
+        const status  = document.getElementById('statusFilter').value;
+        const keyword = document.getElementById('keyword').value;
+        const { data } = await axios.get('/api/v1/vouchers', { params:{ type, status, keyword } });
+        setRows(data);
+        updatePinnedTotals(); // 초기 합계
+      }
+
+      async function createRow() {
+        const payload = readForm();
+        await axios.post('/api/v1/vouchers', payload);
+        await search();
+        clearForm();
+      }
+
+      async function updateRow() {
+        if (!selectedId) { alert('수정할 행을 선택하세요'); return; }
+        const payload = readForm();
+        await axios.put(`/api/v1/vouchers/${selectedId}`, payload);
+        await search();
+      }
+
+      async function deleteRow() {
+        if (!selectedId) { alert('삭제할 행을 선택하세요'); return; }
+        if (!confirm('정말 삭제할까요?')) return;
+        await axios.delete(`/api/v1/vouchers/${selectedId}`);
+        await search();
+        clearForm();
+      }
+
+      /* ---- 폼 ---- */
+      let selectedId = null;
+      function fillForm(r) {
+        selectedId = r.id;
+        setVal('voucherNo', r.voucherNo);
+        setVal('type', r.type);
+        setVal('voucherDate', r.voucherDate);
+        setVal('partnerName', r.partnerName);
+        setVal('amount', r.amount);
+        setVal('status', r.status);
+      }
+      function readForm() {
+        return {
+          voucherNo:   getVal('voucherNo'),
+          type:        getVal('type'),
+          voucherDate: getVal('voucherDate'),
+          partnerName: getVal('partnerName'),
+          amount:      Number(getVal('amount') || 0),
+          status:      getVal('status')
+        };
+      }
+      function clearForm() {
+        selectedId = null;
+        setVal('voucherNo','');
+        setVal('type','S');
+        setVal('voucherDate', today);
+        setVal('partnerName','');
+        setVal('amount','');
+        setVal('status','OPEN');
+        gridApi?.deselectAll?.();
+      }
+      function getVal(id){ return document.getElementById(id).value; }
+      function setVal(id,v){ document.getElementById(id).value = v ?? ''; }
+
+      /* ---- 이벤트 ---- */
+      document.getElementById('btnSearch').addEventListener('click', search);
+      document.getElementById('btnRefresh').addEventListener('click', () => {
+        document.getElementById('typeFilter').value = '';
+        document.getElementById('statusFilter').value = '';
+        document.getElementById('keyword').value = '';
+        search();
+      });
+      document.getElementById('btnCreate').addEventListener('click', createRow);
+      document.getElementById('btnUpdate').addEventListener('click', updateRow);
+      document.getElementById('btnDelete').addEventListener('click', deleteRow);
+    });
+  </script>
+</section>
+</body>
+</html>

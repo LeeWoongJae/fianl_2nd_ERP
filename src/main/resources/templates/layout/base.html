@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org" xmlns:layout="http://www.ultraq.net.nz/thymeleaf/layout">
+<head>
+  <meta charset="UTF-8"/>
+  <title layout:fragment="title">ERP</title>
+  <style>
+    :root{ --bg:#f6f7fb; }
+    html,body{ height:100%; }
+    body{ margin:0; background:var(--bg); font-family:system-ui, Arial, sans-serif;}
+    .layout{
+      display:grid;
+      grid-template-rows:56px 1fr 44px;
+      height:100vh;
+    }
+    .main{
+      display:grid;
+      grid-template-columns:240px 1fr;
+      gap:0;
+      min-height:0; /* grid child overflow fix */
+    }
+    .content{
+      padding:16px;
+      overflow:auto;
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <div th:replace="~{layout/header :: header}"></div>
+  <div class="main">
+    <div th:replace="~{layout/sidebar :: sidebar}"></div>
+    <main class="content">
+      <!-- 자식 템플릿이 여기 채움 -->
+      <section layout:fragment="content"></section>
+    </main>
+  </div>
+  <div th:replace="~{layout/footer :: footer}"></div>
+</div>
+</body>
+</html>
