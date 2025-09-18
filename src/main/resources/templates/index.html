@@ -13,6 +13,10 @@
   </head>
   <body>
     <h1>index.html</h1>
+    <!-- 🔹 모달 호출 버튼 -->
+      <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#myModal">
+        모달 열기
+      </button>
     <table class="table">
       <tr>
         <th>글번호</th>
@@ -32,4 +36,11 @@
       </tr>
     </table>
   </body>
+  
+   <!-- 모달 include -->
+    <div th:replace="modal/modal :: basicModal"></div>
+  
+  
+   <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
 </html>
